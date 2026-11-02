@@ -10,6 +10,8 @@ Projeto para ESP32 com display OLED SSD1306 de 0,96" que exibe o clima atual do 
 - Botão no GPIO 4 para alternar entre:
   - modo clima;
   - modo relógio grande (`HH:MM`).
+- Ícones de clima conforme o código WMO.
+- Ícone de sol entre 6:00 e 17:59 e lua nos demais horários.
 - Debounce de 50 ms no botão.
 - Reconexão de Wi-Fi e nova tentativa em caso de falha na API.
 - Mensagens de erro no display e logs no Monitor Serial.
@@ -57,20 +59,34 @@ As bibliotecas `WiFi`, `WiFiClientSecure`, `HTTPClient`, `Wire` e `time.h` já f
 
 ## Configuração
 
-No arquivo `Clima_ESP32.ino`, preencha as credenciais da rede:
+As configurações de rede e da API ficam em `config.h`, que não é versionado.
 
-```cpp
-const char* WIFI_SSID = "SUA_REDE_WIFI";
-const char* WIFI_PASS = "SUA_SENHA_WIFI";
-```
+1. Copie o arquivo de exemplo:
+   ```bash
+   cp config.example.h config.h
+   ```
+2. Edite `config.h` com os dados da sua rede e da API:
+   ```cpp
+   #define WIFI_SSID "SUA_REDE_WIFI"
+   #define WIFI_PASS "SUA_SENHA_WIFI"
+
+   #define API_CLIMA_URL "https://api.open-meteo.com/v1/forecast"
+   #define API_CLIMA_LATITUDE -22.9068
+   #define API_CLIMA_LONGITUDE -43.1729
+   #define API_CLIMA_TIMEZONE "America%2FSao_Paulo"
+   ```
+3. Se `config.h` não existir, a compilação para com uma mensagem orientando a criar o arquivo a partir de `config.example.h`.
 
 Principais parâmetros:
 
-| Constante | Valor atual | Descrição |
+| Constante | Valor padrão | Descrição |
 |---|---|---|
-| `LATITUDE` | `-22.9068` | Latitude do Rio de Janeiro |
-| `LONGITUDE` | `-43.1729` | Longitude do Rio de Janeiro |
-| `FUSO_HORARIO` | `America%2FSao_Paulo` | Fuso usado na consulta da API |
+| `WIFI_SSID` | `SUA_REDE_WIFI` | Nome da rede Wi-Fi |
+| `WIFI_PASS` | `SUA_SENHA_WIFI` | Senha da rede Wi-Fi |
+| `API_CLIMA_URL` | `https://api.open-meteo.com/v1/forecast` | URL base da Open-Meteo |
+| `API_CLIMA_LATITUDE` | `-22.9068` | Latitude do Rio de Janeiro |
+| `API_CLIMA_LONGITUDE` | `-43.1729` | Longitude do Rio de Janeiro |
+| `API_CLIMA_TIMEZONE` | `America%2FSao_Paulo` | Fuso usado na consulta da API |
 | `INTERVALO_ATUALIZACAO` | 10 minutos | Intervalo entre consultas de clima |
 | `INTERVALO_REPETICAO` | 60 segundos | Nova tentativa após falha |
 | `INTERVALO_RELOGIO` | 1 segundo | Atualização do relógio na tela |
@@ -112,11 +128,11 @@ Vento 15.7 km/h
 Atual 13:45:30
 ```
 
-A hora da última linha vem do NTP e atualiza a cada segundo.
+A hora da última linha vem do NTP e atualiza a cada segundo. O ícone de clima aparece no canto superior direito (16×16) e o ícone de horário no início do rodapé (8×8). Para céu limpo, o ícone de clima é sol durante o dia e lua à noite.
 
 ### Modo relógio
 
-Mostra somente `HH:MM` com fonte tamanho 4, centralizado no display. Se o NTP ainda não sincronizou, mostra `--:--`.
+Mostra um ícone de sol/lua centralizado no topo e `HH:MM` com fonte tamanho 4 logo abaixo. Se o NTP ainda não sincronizou, mostra `--:--` e omite o ícone.
 
 ## API Open-Meteo
 
@@ -170,6 +186,36 @@ A API não exige chave. O horário exibido no display não vem da API: ele é ob
 
 No código, os textos são escritos sem acentos para evitar caracteres incorretos na fonte padrão do display.
 
+## Ícones
+
+Os bitmaps monocromáticos ficam em `icones.h` e são desenhados com `display.drawBitmap()`, sem biblioteca adicional.
+
+| Condição | Ícone | Códigos WMO |
+|---|---|---|
+| Céu limpo | Sol de dia / lua à noite | 0, 1 |
+| Parcialmente nublado | Sol com nuvem | 2 |
+| Nublado | Nuvem | 3 |
+| Nevoeiro | Névoa | 45, 48 |
+| Garoa | Nuvem com gotas | 51–57 |
+| Chuva | Nuvem com chuva | 61–67, 80–82 |
+| Neve | Nuvem com flocos | 71–77, 85, 86 |
+| Tempestade | Nuvem com raio | 95–99 |
+
+Ícone de horário:
+
+| Horário | Ícone |
+|---|---|
+| 6:00–17:59 | Sol |
+| 18:00–5:59 | Lua |
+
+Tamanhos usados:
+
+- Ícone de clima: 16×16, no canto superior direito do modo clima.
+- Ícone de horário no modo clima: 8×8, no início do rodapé.
+- Ícone de horário no modo relógio: 16×16, centralizado acima de `HH:MM`.
+
+Sem NTP sincronizado, o ícone de horário é omitido e o ícone de céu limpo usa sol como fallback.
+
 ## Compilação e upload
 
 1. Abra `Clima_ESP32.ino` na Arduino IDE.
@@ -180,8 +226,8 @@ No código, os textos são escritos sem acentos para evitar caracteres incorreto
 
 Compilação de referência para ESP32 Dev Module:
 
-- Flash: aproximadamente 1.082.924 bytes (82%).
-- RAM global: aproximadamente 50.928 bytes (15%).
+- Flash: aproximadamente 1.083.892 bytes (82%).
+- RAM global: aproximadamente 50.912 bytes (15%).
 
 Os valores podem variar conforme a versão do core ESP32 e das bibliotecas.
 
@@ -204,13 +250,15 @@ Os valores podem variar conforme a versão do core ESP32 e das bibliotecas.
 
 ## Segurança
 
-Não versionar SSID e senha reais. Mantenha os placeholders no código ou use um arquivo de configuração local que não seja enviado ao repositório. Se credenciais reais já foram expostas, troque a senha da rede.
+O arquivo `config.h` está listado no `.gitignore` e não deve ser versionado. Mantenha apenas placeholders em `config.example.h`. Se credenciais reais já foram expostas em algum commit, troque a senha da rede.
+
+As credenciais ficam embutidas no firmware em texto simples. O `.gitignore` evita exposição no repositório, mas não impede a extração por acesso físico ao ESP32.
 
 ## Melhorias futuras
 
 - Salvar o modo de visualização na NVS/Preferences.
 - Usar fonte customizada ou sete segmentos no modo relógio.
-- Adicionar ícones de clima.
+- Adicionar ícones animados ou novas condições de clima.
 - Exibir previsão de mínima/máxima e probabilidade de chuva.
 - Adicionar RTC DS3231 para manter a hora sem Wi-Fi desde o boot.
 - Implementar atualização OTA.
@@ -220,6 +268,10 @@ Não versionar SSID e senha reais. Mantenha os placeholders no código ou use um
 
 ```text
 Clima_ESP32/
+├── .gitignore
 ├── Clima_ESP32.ino
+├── config.example.h
+├── config.h          (local, ignorado pelo Git)
+├── icones.h
 └── README.md
 ```

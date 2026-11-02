@@ -6,6 +6,13 @@
 #include <Adafruit_SSD1306.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include "icones.h"
+
+#if __has_include("config.h")
+#include "config.h"
+#else
+#error "Crie config.h a partir de config.example.h"
+#endif
 
 #define LARGURA_TELA 128
 #define ALTURA_TELA 64
@@ -16,13 +23,6 @@
 
 const unsigned long TEMPO_DEBOUNCE = 50;
 const unsigned long INTERVALO_RELOGIO = 1000;
-
-const char* WIFI_SSID = "SUA_REDE_WIFI";
-const char* WIFI_PASS = "SUA_SENHA_WIFI";
-
-const float LATITUDE = -22.9068;
-const float LONGITUDE = -43.1729;
-const char* FUSO_HORARIO = "America%2FSao_Paulo";
 
 const unsigned long INTERVALO_ATUALIZACAO = 10UL * 60UL * 1000UL;
 const unsigned long INTERVALO_REPETICAO = 60UL * 1000UL;
@@ -141,13 +141,14 @@ bool atualizarClima() {
 
   sincronizarHora();
 
-  String url = "https://api.open-meteo.com/v1/forecast?latitude=";
-  url += String(LATITUDE, 4);
+  String url = API_CLIMA_URL;
+  url += "?latitude=";
+  url += String(API_CLIMA_LATITUDE, 4);
   url += "&longitude=";
-  url += String(LONGITUDE, 4);
+  url += String(API_CLIMA_LONGITUDE, 4);
   url += "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m";
   url += "&timezone=";
-  url += FUSO_HORARIO;
+  url += API_CLIMA_TIMEZONE;
 
   WiFiClientSecure cliente;
   cliente.setInsecure();
@@ -219,6 +220,7 @@ bool atualizarClima() {
 void mostrarClima() {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
+  desenharIconeClima(112, 0);
 
   display.setTextSize(1);
   display.setCursor(0, 0);
@@ -293,11 +295,95 @@ String horaFormatada() {
   return String(buffer);
 }
 
+int horaAtual() {
+  time_t agora = time(nullptr);
+  if (agora < 1700000000) {
+    return -1;
+  }
+
+  struct tm info;
+  localtime_r(&agora, &info);
+  return info.tm_hour;
+}
+
+bool horarioDiurno() {
+  int hora = horaAtual();
+  if (hora < 0) {
+    return true;
+  }
+  return hora >= 6 && hora < 18;
+}
+
+const unsigned char* bitmapClima(int codigo, bool diurno) {
+  switch (codigo) {
+    case 0:
+    case 1:
+      return diurno ? icone_sol : icone_lua;
+    case 2:
+      return icone_parcial;
+    case 3:
+      return icone_nublado;
+    case 45:
+    case 48:
+      return icone_nevoeiro;
+    case 51:
+    case 53:
+    case 55:
+    case 56:
+    case 57:
+      return icone_garoa;
+    case 61:
+    case 63:
+    case 65:
+    case 66:
+    case 67:
+    case 80:
+    case 81:
+    case 82:
+      return icone_chuva;
+    case 71:
+    case 73:
+    case 75:
+    case 77:
+    case 85:
+    case 86:
+      return icone_neve;
+    case 95:
+    case 96:
+    case 99:
+      return icone_tempestade;
+    default:
+      return icone_nublado;
+  }
+}
+
+void desenharIconeClima(int x, int y) {
+  const unsigned char* icone = bitmapClima(clima.codigo, horarioDiurno());
+  display.drawBitmap(x, y, icone, ICONE_CLIMA_LARGURA, ICONE_CLIMA_ALTURA, SSD1306_WHITE);
+}
+
+void desenharIconeHorarioPequeno(int x, int y) {
+  const unsigned char* icone = horarioDiurno() ? icone_sol_pequeno : icone_lua_pequena;
+  display.drawBitmap(x, y, icone, ICONE_HORARIO_LARGURA, ICONE_HORARIO_ALTURA, SSD1306_WHITE);
+}
+
+void desenharIconeHorarioGrande(int x, int y) {
+  const unsigned char* icone = horarioDiurno() ? icone_sol : icone_lua;
+  display.drawBitmap(x, y, icone, ICONE_RELOGIO_LARGURA, ICONE_RELOGIO_ALTURA, SSD1306_WHITE);
+}
+
 void atualizarRelogioTela() {
   display.fillRect(0, 56, LARGURA_TELA, 8, SSD1306_BLACK);
   display.setTextColor(SSD1306_WHITE);
   display.setTextSize(1);
-  display.setCursor(0, 56);
+
+  if (horaAtual() >= 0) {
+    desenharIconeHorarioPequeno(0, 56);
+    display.setCursor(10, 56);
+  } else {
+    display.setCursor(0, 56);
+  }
+
   display.print("Atual ");
   display.print(horaFormatada());
   display.display();
@@ -306,12 +392,16 @@ void atualizarRelogioTela() {
 void mostrarRelogioGrande() {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(4);
 
+  if (horaAtual() >= 0) {
+    desenharIconeHorarioGrande(56, 2);
+  }
+
+  display.setTextSize(4);
   String hora = horaFormatada();
   hora = hora.substring(0, 5);
 
-  display.setCursor(4, 18);
+  display.setCursor(4, 22);
   display.print(hora);
   display.display();
 }
