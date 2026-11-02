@@ -359,17 +359,17 @@ const unsigned char* bitmapClima(int codigo, bool diurno) {
 
 void desenharIconeClima(int x, int y) {
   const unsigned char* icone = bitmapClima(clima.codigo, horarioDiurno());
-  display.drawBitmap(x, y, icone, ICONE_CLIMA_LARGURA, ICONE_CLIMA_ALTURA, SSD1306_WHITE);
+  display.drawXBitmap(x, y, icone, ICONE_CLIMA_LARGURA, ICONE_CLIMA_ALTURA, SSD1306_WHITE);
 }
 
 void desenharIconeHorarioPequeno(int x, int y) {
   const unsigned char* icone = horarioDiurno() ? icone_sol_pequeno : icone_lua_pequena;
-  display.drawBitmap(x, y, icone, ICONE_HORARIO_LARGURA, ICONE_HORARIO_ALTURA, SSD1306_WHITE);
+  display.drawXBitmap(x, y, icone, ICONE_HORARIO_LARGURA, ICONE_HORARIO_ALTURA, SSD1306_WHITE);
 }
 
 void desenharIconeHorarioGrande(int x, int y) {
   const unsigned char* icone = horarioDiurno() ? icone_sol : icone_lua;
-  display.drawBitmap(x, y, icone, ICONE_RELOGIO_LARGURA, ICONE_RELOGIO_ALTURA, SSD1306_WHITE);
+  display.drawXBitmap(x, y, icone, ICONE_RELOGIO_LARGURA, ICONE_RELOGIO_ALTURA, SSD1306_WHITE);
 }
 
 void atualizarRelogioTela() {

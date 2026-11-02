@@ -188,7 +188,7 @@ No código, os textos são escritos sem acentos para evitar caracteres incorreto
 
 ## Ícones
 
-Os bitmaps monocromáticos ficam em `icones.h` e são desenhados com `display.drawBitmap()`, sem biblioteca adicional.
+Os bitmaps monocromáticos ficam em `icones.h` e são desenhados com `display.drawXBitmap()`, sem biblioteca adicional.
 
 | Condição | Ícone | Códigos WMO |
 |---|---|---|
@@ -216,6 +216,29 @@ Tamanhos usados:
 
 Sem NTP sincronizado, o ícone de horário é omitido e o ícone de céu limpo usa sol como fallback.
 
+## Pré-visualização no PC
+
+Os ícones e as telas podem ser pré-visualizados sem gravar no ESP32:
+
+```bash
+python3 tools/preview_icones.py
+```
+
+O script lê `icones.h`, interpreta os bitmaps em LSB-first (o mesmo formato usado por `drawXBitmap()`) e gera em `preview/`:
+
+- `icones.png`: contato com todos os ícones ampliados e rotulados;
+- `tela_clima_dia.png` e `tela_clima_noite.png`: mockups do modo clima;
+- `tela_relogio_dia.png` e `tela_relogio_noite.png`: mockups do modo relógio;
+- `telas.png`: composição com as quatro telas.
+
+Requisitos: Python 3 e Pillow. Se necessário:
+
+```bash
+pip install pillow
+```
+
+Os ícones são renderizados exatamente como no display; os textos dos mockups são aproximados com uma fonte monoespaçada do sistema. A pasta `preview/` está no `.gitignore`.
+
 ## Compilação e upload
 
 1. Abra `Clima_ESP32.ino` na Arduino IDE.
@@ -226,7 +249,7 @@ Sem NTP sincronizado, o ícone de horário é omitido e o ícone de céu limpo u
 
 Compilação de referência para ESP32 Dev Module:
 
-- Flash: aproximadamente 1.083.892 bytes (82%).
+- Flash: aproximadamente 1.084.088 bytes (82%).
 - RAM global: aproximadamente 50.912 bytes (15%).
 
 Os valores podem variar conforme a versão do core ESP32 e das bibliotecas.
@@ -273,5 +296,8 @@ Clima_ESP32/
 ├── config.example.h
 ├── config.h          (local, ignorado pelo Git)
 ├── icones.h
-└── README.md
+├── preview/          (gerado, ignorado pelo Git)
+├── README.md
+└── tools/
+    └── preview_icones.py
 ```
