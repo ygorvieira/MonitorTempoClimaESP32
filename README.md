@@ -267,7 +267,7 @@ Os valores podem variar conforme a versão do core ESP32 e das bibliotecas.
 - O primeiro boot precisa de Wi-Fi para sincronizar o NTP e buscar o clima.
 - Depois de sincronizado, o RTC interno continua contando mesmo sem Wi-Fi.
 - Após perder a alimentação, a hora precisa ser sincronizada novamente.
-- A conexão HTTPS usa `setInsecure()`, ou seja, não valida o certificado do servidor.
+- O NTP (SNTP/UDP) não é autenticado; a hora pode ser falsificada por um atacante na rede.
 - O modo de visualização não é salvo; após reiniciar, o sistema volta ao modo clima.
 - A Open-Meteo é gratuita para uso não comercial, mas está sujeita aos termos do serviço.
 
@@ -275,7 +275,17 @@ Os valores podem variar conforme a versão do core ESP32 e das bibliotecas.
 
 O arquivo `config.h` está listado no `.gitignore` e não deve ser versionado. Mantenha apenas placeholders em `config.example.h`. Se credenciais reais já foram expostas em algum commit, troque a senha da rede.
 
-As credenciais ficam embutidas no firmware em texto simples. O `.gitignore` evita exposição no repositório, mas não impede a extração por acesso físico ao ESP32.
+As credenciais ficam embutidas no firmware em texto simples. O `.gitignore` evita exposição no repositório, mas não impede a extração por acesso físico ao ESP32. Para produção, considere habilitar Flash Encryption e Secure Boot.
+
+Mitigações aplicadas no firmware:
+
+- **TLS validado:** a conexão HTTPS usa `useBuiltinCACertBundle()` (bundle de CAs do core ESP32), em vez de `setInsecure()`. Requer core ESP32 3.x.
+- **Limite de resposta:** o corpo HTTP é lido com limite de 8 KB (`TAMANHO_MAXIMO_RESPOSTA`), evitando esgotamento de heap por resposta maliciosa.
+- **Validação de dados:** temperatura, sensação, umidade, vento e código WMO são checados por faixa antes de serem exibidos.
+- **Wi-Fi mínimo:** `WiFi.setMinSecurity(WIFI_AUTH_WPA2_PSK)` rejeita redes abertas/WEP; `WiFi.persistent(false)` evita gravar as credenciais na NVS; reconexão automática habilitada.
+- **Logs:** nenhuma credencial é impressa no Monitor Serial.
+
+Limitações que permanecem: o NTP não é autenticado e o dispositivo não impede um AP falso que use o mesmo SSID e uma senha conhecida (evil twin).
 
 ## Melhorias futuras
 

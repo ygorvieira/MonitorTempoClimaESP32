@@ -5,6 +5,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <ArduinoJson.h>
+#include <StreamString.h>
 #include <time.h>
 #include "icones.h"
 
@@ -26,6 +27,8 @@ const unsigned long INTERVALO_RELOGIO = 1000;
 
 const unsigned long INTERVALO_ATUALIZACAO = 10UL * 60UL * 1000UL;
 const unsigned long INTERVALO_REPETICAO = 60UL * 1000UL;
+
+const size_t TAMANHO_MAXIMO_RESPOSTA = 8UL * 1024UL;
 
 Adafruit_SSD1306 display(LARGURA_TELA, ALTURA_TELA, &Wire, -1);
 
@@ -113,7 +116,10 @@ void conectarWiFi() {
     return;
   }
 
+  WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+  WiFi.setMinSecurity(WIFI_AUTH_WPA2_PSK);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   unsigned long inicio = millis();
@@ -128,6 +134,35 @@ void conectarWiFi() {
     Serial.println("Falha ao conectar no Wi-Fi");
   }
 }
+
+class RespostaLimitadaStream : public StreamString {
+ public:
+  explicit RespostaLimitadaStream(size_t limite) : limite(limite) {}
+
+  size_t write(const uint8_t* buffer, size_t tamanho) override {
+    if (tamanho > 0 && (length() + tamanho) > limite) {
+      excedeuLimite = true;
+      return 0;
+    }
+    return StreamString::write(buffer, tamanho);
+  }
+
+  size_t write(uint8_t dado) override {
+    if (length() >= limite) {
+      excedeuLimite = true;
+      return 0;
+    }
+    return StreamString::write(dado);
+  }
+
+  bool excedeu() const {
+    return excedeuLimite;
+  }
+
+ private:
+  size_t limite;
+  bool excedeuLimite = false;
+};
 
 bool atualizarClima() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -151,7 +186,8 @@ bool atualizarClima() {
   url += API_CLIMA_TIMEZONE;
 
   WiFiClientSecure cliente;
-  cliente.setInsecure();
+  cliente.useBuiltinCACertBundle();
+  cliente.setHandshakeTimeout(15);
 
   HTTPClient http;
   http.setConnectTimeout(10000);
@@ -172,8 +208,24 @@ bool atualizarClima() {
     return false;
   }
 
-  String payload = http.getString();
+  RespostaLimitadaStream resposta(TAMANHO_MAXIMO_RESPOSTA);
+  int resultado = http.writeToStream(&resposta);
   http.end();
+
+  if (resposta.excedeu()) {
+    Serial.println("Resposta da API excedeu o limite");
+    registrarErro("Erro na API", "Resposta grande");
+    return false;
+  }
+
+  if (resultado < 0) {
+    Serial.print("Falha ao ler a resposta HTTP: ");
+    Serial.println(resultado);
+    registrarErro("Erro na API", "Falha na leitura");
+    return false;
+  }
+
+  String payload = resposta;
 
   JsonDocument doc;
   DeserializationError erro = deserializeJson(doc, payload);
@@ -191,11 +243,30 @@ bool atualizarClima() {
     return false;
   }
 
-  clima.temperatura = atual["temperature_2m"] | 0.0f;
-  clima.sensacao = atual["apparent_temperature"] | 0.0f;
-  clima.umidade = atual["relative_humidity_2m"] | 0;
-  clima.vento = atual["wind_speed_10m"] | 0.0f;
-  clima.codigo = atual["weather_code"] | -1;
+  float temperatura = atual["temperature_2m"] | NAN;
+  float sensacao = atual["apparent_temperature"] | NAN;
+  int umidade = atual["relative_humidity_2m"] | -1;
+  float vento = atual["wind_speed_10m"] | NAN;
+  int codigo = atual["weather_code"] | -1;
+
+  bool dadosValidos =
+      isfinite(temperatura) && temperatura >= -90.0f && temperatura <= 60.0f &&
+      isfinite(sensacao) && sensacao >= -90.0f && sensacao <= 70.0f &&
+      umidade >= 0 && umidade <= 100 &&
+      isfinite(vento) && vento >= 0.0f && vento <= 500.0f &&
+      codigo >= 0 && codigo <= 99;
+
+  if (!dadosValidos) {
+    Serial.println("Dados da API fora das faixas esperadas");
+    registrarErro("Dados invalidos", "Resposta suspeita");
+    return false;
+  }
+
+  clima.temperatura = temperatura;
+  clima.sensacao = sensacao;
+  clima.umidade = umidade;
+  clima.vento = vento;
+  clima.codigo = codigo;
 
   Serial.print("Temperatura: ");
   Serial.print(clima.temperatura, 1);
