@@ -5,6 +5,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <ArduinoJson.h>
+#include <DHT.h>
 #include <StreamString.h>
 #include <time.h>
 #include "icones.h"
@@ -21,16 +22,22 @@
 #define PINO_SDA 21
 #define PINO_SCL 22
 #define PINO_BOTAO 4
+#define PINO_DHT 5
 
 const unsigned long TEMPO_DEBOUNCE = 50;
 const unsigned long INTERVALO_RELOGIO = 1000;
+const unsigned long INTERVALO_DHT = 2500;
+const unsigned long VALIDADE_LEITURA_DHT = 30000;
 
 const unsigned long INTERVALO_ATUALIZACAO = 10UL * 60UL * 1000UL;
 const unsigned long INTERVALO_REPETICAO = 60UL * 1000UL;
 
 const size_t TAMANHO_MAXIMO_RESPOSTA = 8UL * 1024UL;
 
+const int DIAS_PREVISAO = 3;
+
 Adafruit_SSD1306 display(LARGURA_TELA, ALTURA_TELA, &Wire, -1);
+DHT dht(PINO_DHT, DHT11);
 
 struct Clima {
   float temperatura;
@@ -40,21 +47,41 @@ struct Clima {
   int codigo;
 };
 
+struct PrevisaoDia {
+  float minima;
+  float maxima;
+  int codigo;
+  int chuva;
+  char data[11];
+};
+
+struct LeituraLocal {
+  float temperatura;
+  float umidade;
+  bool valida;
+  unsigned long ultimaLeitura;
+};
+
 enum ModoVisualizacao {
   MODO_CLIMA,
-  MODO_RELOGIO
+  MODO_RELOGIO,
+  MODO_PREVISAO
 };
 
 Clima clima;
+PrevisaoDia previsao[DIAS_PREVISAO];
+LeituraLocal leituraLocal = {0.0f, 0.0f, false, 0};
 ModoVisualizacao modoAtual = MODO_CLIMA;
 
 bool climaValido = false;
+bool previsaoValida = false;
 bool ntpConfigurado = false;
 bool estadoBotao = HIGH;
 bool ultimaLeituraBotao = HIGH;
 unsigned long tempoMudancaBotao = 0;
 unsigned long proximaAtualizacao = 0;
 unsigned long proximaAtualizacaoRelogio = 0;
+unsigned long proximaLeituraDHT = 0;
 
 String erroLinha1 = "Sem dados";
 String erroLinha2 = "Aguardando clima";
@@ -62,6 +89,7 @@ String erroLinha2 = "Aguardando clima";
 void setup() {
   Serial.begin(115200);
   Wire.begin(PINO_SDA, PINO_SCL);
+  dht.begin();
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, ENDERECO_OLED)) {
     Serial.println("Falha ao iniciar o OLED");
@@ -80,12 +108,16 @@ void setup() {
   mostrarMensagem("Conectando", "ao Wi-Fi...");
   conectarWiFi();
 
+  atualizarLeituraLocal();
+
   if (WiFi.status() == WL_CONNECTED) {
     mostrarMensagem("Wi-Fi OK", "Sincronizando hora");
     sincronizarHora();
     mostrarMensagem("Hora atual", horaFormatada());
   } else {
-    mostrarMensagem("Sem Wi-Fi", "Verifique os dados");
+    erroLinha1 = "Sem Wi-Fi";
+    erroLinha2 = "Verifique os dados";
+    exibirTelaClima();
   }
 
   delay(1200);
@@ -93,6 +125,10 @@ void setup() {
 
 void loop() {
   verificarBotao();
+
+  if (atualizarLeituraLocal() && modoAtual == MODO_CLIMA && !climaValido) {
+    exibirTelaClima();
+  }
 
   if ((long)(millis() - proximaAtualizacaoRelogio) >= 0) {
     if (modoAtual == MODO_RELOGIO) {
@@ -182,6 +218,9 @@ bool atualizarClima() {
   url += "&longitude=";
   url += String(API_CLIMA_LONGITUDE, 4);
   url += "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m";
+  url += "&daily=temperature_2m_min,temperature_2m_max,weather_code,precipitation_probability_max";
+  url += "&forecast_days=";
+  url += String(DIAS_PREVISAO);
   url += "&timezone=";
   url += API_CLIMA_TIMEZONE;
 
@@ -281,10 +320,78 @@ bool atualizarClima() {
   Serial.print(" | Hora NTP: ");
   Serial.println(horaFormatada());
 
+  JsonObject diario = doc["daily"].as<JsonObject>();
+  if (!diario.isNull()) {
+    atualizarPrevisao(diario);
+  } else {
+    Serial.println("Objeto 'daily' ausente");
+    previsaoValida = false;
+  }
+
   climaValido = true;
   if (modoAtual == MODO_CLIMA) {
     mostrarClima();
+  } else if (modoAtual == MODO_PREVISAO) {
+    desenharTelaAtual();
   }
+  return true;
+}
+
+bool atualizarPrevisao(JsonObject diario) {
+  JsonArray datas = diario["time"];
+  JsonArray minimas = diario["temperature_2m_min"];
+  JsonArray maximas = diario["temperature_2m_max"];
+  JsonArray codigos = diario["weather_code"];
+  JsonArray chuvas = diario["precipitation_probability_max"];
+
+  if (datas.isNull() || minimas.isNull() || maximas.isNull() ||
+      codigos.isNull() || datas.size() < DIAS_PREVISAO ||
+      minimas.size() < DIAS_PREVISAO || maximas.size() < DIAS_PREVISAO ||
+      codigos.size() < DIAS_PREVISAO) {
+    Serial.println("Dados diarios ausentes ou incompletos");
+    previsaoValida = false;
+    return false;
+  }
+
+  PrevisaoDia novas[DIAS_PREVISAO];
+
+  for (int i = 0; i < DIAS_PREVISAO; i++) {
+    float minima = minimas[i] | NAN;
+    float maxima = maximas[i] | NAN;
+    int codigo = codigos[i] | -1;
+    int chuva = -1;
+
+    if (!chuvas.isNull() && i < (int)chuvas.size()) {
+      chuva = chuvas[i] | -1;
+    }
+
+    bool dadosValidos =
+        isfinite(minima) && minima >= -90.0f && minima <= 60.0f &&
+        isfinite(maxima) && maxima >= -90.0f && maxima <= 60.0f &&
+        minima <= maxima && codigo >= 0 && codigo <= 99 &&
+        (chuva == -1 || (chuva >= 0 && chuva <= 100));
+
+    if (!dadosValidos) {
+      Serial.print("Previsao invalida no dia ");
+      Serial.println(i);
+      previsaoValida = false;
+      return false;
+    }
+
+    const char* data = datas[i] | "";
+    strncpy(novas[i].data, data, sizeof(novas[i].data) - 1);
+    novas[i].data[sizeof(novas[i].data) - 1] = '\0';
+    novas[i].minima = minima;
+    novas[i].maxima = maxima;
+    novas[i].codigo = codigo;
+    novas[i].chuva = chuva;
+  }
+
+  for (int i = 0; i < DIAS_PREVISAO; i++) {
+    previsao[i] = novas[i];
+  }
+
+  previsaoValida = true;
   return true;
 }
 
@@ -321,6 +428,119 @@ void mostrarClima() {
   atualizarRelogioTela();
 }
 
+bool atualizarLeituraLocal() {
+  if ((long)(millis() - proximaLeituraDHT) < 0) {
+    if (leituraLocal.valida &&
+        (long)(millis() - leituraLocal.ultimaLeitura) >= (long)VALIDADE_LEITURA_DHT) {
+      leituraLocal.valida = false;
+      return true;
+    }
+    return false;
+  }
+
+  proximaLeituraDHT = millis() + INTERVALO_DHT;
+
+  float temperatura = dht.readTemperature();
+  float umidade = dht.readHumidity();
+  bool dadosValidos = isfinite(temperatura) && temperatura >= 0.0f &&
+                      temperatura <= 50.0f && isfinite(umidade) &&
+                      umidade >= 0.0f && umidade <= 100.0f;
+
+  if (dadosValidos) {
+    bool mudou = !leituraLocal.valida ||
+                 fabsf(temperatura - leituraLocal.temperatura) >= 0.5f ||
+                 fabsf(umidade - leituraLocal.umidade) >= 0.5f;
+    leituraLocal.temperatura = temperatura;
+    leituraLocal.umidade = umidade;
+    leituraLocal.valida = true;
+    leituraLocal.ultimaLeitura = millis();
+    return mudou;
+  }
+
+  if (leituraLocal.valida &&
+      (long)(millis() - leituraLocal.ultimaLeitura) >= (long)VALIDADE_LEITURA_DHT) {
+    leituraLocal.valida = false;
+    return true;
+  }
+
+  return false;
+}
+
+void mostrarClimaLocal() {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print("Local (DHT11)");
+
+  display.setTextSize(2);
+  display.setCursor(0, 10);
+  display.print(leituraLocal.temperatura, 1);
+  display.print("C");
+
+  display.setTextSize(1);
+  display.setCursor(0, 28);
+  display.print("Umidade ");
+  display.print(leituraLocal.umidade, 0);
+  display.print("%");
+
+  display.setCursor(0, 38);
+  display.print(erroLinha1);
+
+  display.setCursor(0, 48);
+  display.print(erroLinha2);
+
+  atualizarRelogioTela();
+}
+
+void desenharTextoCentralizado(int x, int largura, int y, const String& texto) {
+  int larguraTexto = texto.length() * 6;
+  display.setCursor(x + (largura - larguraTexto) / 2, y);
+  display.print(texto);
+}
+
+void mostrarPrevisao() {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+
+  desenharTextoCentralizado(0, LARGURA_TELA, 0, "Previsao");
+
+  int larguraColuna = (LARGURA_TELA + DIAS_PREVISAO - 1) / DIAS_PREVISAO;
+
+  for (int i = 0; i < DIAS_PREVISAO; i++) {
+    int x = i * larguraColuna;
+
+    char rotulo[8];
+    rotuloPrevisao(previsao[i], i, rotulo, sizeof(rotulo));
+    desenharTextoCentralizado(x, larguraColuna, 8, rotulo);
+
+    const unsigned char* icone = bitmapClima(previsao[i].codigo, true);
+    int iconeX = x + (larguraColuna - ICONE_CLIMA_LARGURA) / 2;
+    display.drawXBitmap(iconeX, 16, icone, ICONE_CLIMA_LARGURA,
+                        ICONE_CLIMA_ALTURA, SSD1306_WHITE);
+
+    char faixa[12];
+    snprintf(faixa, sizeof(faixa), "%.0f/%.0f", previsao[i].minima,
+             previsao[i].maxima);
+    desenharTextoCentralizado(x, larguraColuna, 32, faixa);
+
+    char chuva[8];
+    if (previsao[i].chuva >= 0) {
+      snprintf(chuva, sizeof(chuva), "%d%%", previsao[i].chuva);
+    } else {
+      snprintf(chuva, sizeof(chuva), "--");
+    }
+    desenharTextoCentralizado(x, larguraColuna, 40, chuva);
+
+    desenharTextoCentralizado(x, larguraColuna, 48,
+                              descricaoCurtaTempo(previsao[i].codigo));
+  }
+
+  atualizarRelogioTela();
+}
+
 void mostrarMensagem(const String& linha1, const String& linha2) {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
@@ -330,6 +550,16 @@ void mostrarMensagem(const String& linha1, const String& linha2) {
   display.setCursor(0, 32);
   display.println(linha2);
   atualizarRelogioTela();
+}
+
+void exibirTelaClima() {
+  if (climaValido) {
+    mostrarClima();
+  } else if (leituraLocal.valida) {
+    mostrarClimaLocal();
+  } else {
+    mostrarMensagem(erroLinha1, erroLinha2);
+  }
 }
 
 void sincronizarHora() {
@@ -480,17 +710,42 @@ void mostrarRelogioGrande() {
 void desenharTelaAtual() {
   if (modoAtual == MODO_RELOGIO) {
     mostrarRelogioGrande();
-  } else if (climaValido) {
-    mostrarClima();
+  } else if (modoAtual == MODO_PREVISAO) {
+    if (previsaoValida) {
+      mostrarPrevisao();
+    } else {
+      mostrarMensagem("Previsao", "Indisponivel");
+    }
   } else {
-    mostrarMensagem(erroLinha1, erroLinha2);
+    exibirTelaClima();
   }
 }
 
 void alternarModo() {
-  modoAtual = (modoAtual == MODO_CLIMA) ? MODO_RELOGIO : MODO_CLIMA;
+  switch (modoAtual) {
+    case MODO_CLIMA:
+      modoAtual = MODO_RELOGIO;
+      break;
+    case MODO_RELOGIO:
+      modoAtual = MODO_PREVISAO;
+      break;
+    default:
+      modoAtual = MODO_CLIMA;
+      break;
+  }
+
   Serial.print("Modo de visualizacao: ");
-  Serial.println(modoAtual == MODO_CLIMA ? "clima" : "relogio");
+  switch (modoAtual) {
+    case MODO_CLIMA:
+      Serial.println("clima");
+      break;
+    case MODO_RELOGIO:
+      Serial.println("relogio");
+      break;
+    default:
+      Serial.println("previsao");
+      break;
+  }
   desenharTelaAtual();
 }
 
@@ -514,6 +769,7 @@ void registrarErro(const String& linha1, const String& linha2) {
   erroLinha1 = linha1;
   erroLinha2 = linha2;
   climaValido = false;
+  previsaoValida = false;
 
   Serial.print("Erro: ");
   Serial.print(linha1);
@@ -521,6 +777,8 @@ void registrarErro(const String& linha1, const String& linha2) {
   Serial.println(linha2);
 
   if (modoAtual == MODO_CLIMA) {
+    exibirTelaClima();
+  } else if (modoAtual == MODO_PREVISAO) {
     mostrarMensagem(linha1, linha2);
   }
 }
@@ -579,4 +837,84 @@ const char* descricaoTempo(int codigo) {
     default:
       return "Condicao desconhecida";
   }
+}
+
+const char* descricaoCurtaTempo(int codigo) {
+  switch (codigo) {
+    case 0:
+    case 1:
+      return "Limpo";
+    case 2:
+      return "Parcial";
+    case 3:
+      return "Nublado";
+    case 45:
+    case 48:
+      return "Nevoa";
+    case 51:
+    case 53:
+    case 55:
+    case 56:
+    case 57:
+      return "Garoa";
+    case 61:
+    case 63:
+    case 65:
+    case 66:
+    case 67:
+      return "Chuva";
+    case 71:
+    case 73:
+    case 75:
+    case 77:
+    case 85:
+    case 86:
+      return "Neve";
+    case 80:
+    case 81:
+    case 82:
+      return "Panc.";
+    case 95:
+    case 96:
+    case 99:
+      return "Tempest";
+    default:
+      return "Nublado";
+  }
+}
+
+void rotuloPrevisao(const PrevisaoDia& dia, int indice, char* buffer,
+                    size_t tamanho) {
+  if (indice == 0) {
+    snprintf(buffer, tamanho, "Hoje");
+    return;
+  }
+
+  if (indice == 1) {
+    snprintf(buffer, tamanho, "Amanha");
+    return;
+  }
+
+  int ano;
+  int mes;
+  int diaMes;
+  struct tm info = {};
+
+  if (sscanf(dia.data, "%d-%d-%d", &ano, &mes, &diaMes) == 3) {
+    info.tm_year = ano - 1900;
+    info.tm_mon = mes - 1;
+    info.tm_mday = diaMes;
+    info.tm_hour = 12;
+
+    if (mktime(&info) != (time_t)-1) {
+      static const char* diasSemana[] = {"Dom", "Seg", "Ter", "Qua",
+                                         "Qui", "Sex", "Sab"};
+      if (info.tm_wday >= 0 && info.tm_wday < 7) {
+        snprintf(buffer, tamanho, "%s", diasSemana[info.tm_wday]);
+        return;
+      }
+    }
+  }
+
+  snprintf(buffer, tamanho, "Depois");
 }

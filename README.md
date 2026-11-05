@@ -1,15 +1,19 @@
 # Clima_ESP32
 
-Projeto para ESP32 com display OLED SSD1306 de 0,96" que exibe o clima atual do Rio de Janeiro e mantém um relógio em tempo real via NTP. Um botão permite alternar entre a tela de clima e um relógio com fonte grande.
+Projeto para ESP32 com display OLED SSD1306 de 0,96" que exibe o clima atual do Rio de Janeiro, uma previsão para os próximos dias e mantém um relógio em tempo real via NTP. Um botão permite alternar entre as telas de clima, relógio e previsão.
 
 ## Funcionalidades
 
-- Consulta do clima atual na API Open-Meteo (sem chave de API).
+- Consulta do clima atual e da previsão de 3 dias na API Open-Meteo (sem chave de API).
+- Leitura local de temperatura e umidade com sensor DHT11 no GPIO 5.
+- Fallback automático para os dados do DHT11 quando a Open-Meteo ou o Wi-Fi falham.
 - Atualização automática do clima a cada 10 minutos.
 - Hora sincronizada via NTP, com atualização a cada segundo.
 - Botão no GPIO 4 para alternar entre:
   - modo clima;
-  - modo relógio grande (`HH:MM`).
+  - modo relógio grande (`HH:MM`);
+  - modo previsão (hoje, amanhã e o dia seguinte).
+- Previsão com temperatura mínima/máxima, condição, ícone e probabilidade de chuva.
 - Ícones de clima conforme o código WMO.
 - Ícone de sol entre 6:00 e 17:59 e lua nos demais horários.
 - Debounce de 50 ms no botão.
@@ -20,6 +24,7 @@ Projeto para ESP32 com display OLED SSD1306 de 0,96" que exibe o clima atual do 
 
 - 1 placa ESP32 (DevKit com Wi-Fi).
 - 1 display OLED SSD1306 128x64, I2C, 0,96".
+- 1 sensor DHT11 de 4 pinos.
 - 1 botão tátil momentâneo.
 - Jumpers.
 
@@ -33,6 +38,17 @@ Projeto para ESP32 com display OLED SSD1306 de 0,96" que exibe o clima atual do 
 | SCL | GPIO 22 |
 
 O firmware usa o endereço I2C `0x3C`. Alguns módulos usam `0x3D`; nesse caso, ajuste `ENDERECO_OLED`.
+
+### Ligação do DHT11
+
+| DHT11 | ESP32 |
+|---|---|
+| Pino 1 (VCC) | 3V3 |
+| Pino 2 (DATA) | GPIO 5 |
+| Pino 3 (NC) | Não conectar |
+| Pino 4 (GND) | GND |
+
+O pino 3 é `NC` (not connected) e não deve ser ligado. Alimente o sensor em **3,3 V** para que o sinal de DATA não ultrapasse a tensão segura do ESP32. Se você usar o sensor avulso (sem placa), adicione um resistor de pull-up de **10 kΩ entre DATA e VCC**; os módulos com placa geralmente já trazem esse resistor. Confirme a ordem dos pinos pela serigrafia do seu módulo, pois alguns fabricantes usam marcações diferentes.
 
 ### Ligação do botão
 
@@ -52,6 +68,8 @@ Instale pela Library Manager da Arduino IDE:
 - **Adafruit GFX Library**
 - **Adafruit SSD1306**
 - **ArduinoJson** (testado com a versão 7.4.3)
+- **DHT sensor library** (Adafruit), para o DHT11
+- **Adafruit Unified Sensor** (dependência da DHT sensor library)
 
 Também é necessário o pacote de placas **ESP32 by Espressif Systems**.
 
@@ -90,8 +108,11 @@ Principais parâmetros:
 | `INTERVALO_ATUALIZACAO` | 10 minutos | Intervalo entre consultas de clima |
 | `INTERVALO_REPETICAO` | 60 segundos | Nova tentativa após falha |
 | `INTERVALO_RELOGIO` | 1 segundo | Atualização do relógio na tela |
+| `INTERVALO_DHT` | 2,5 segundos | Intervalo entre leituras do DHT11 |
+| `VALIDADE_LEITURA_DHT` | 30 segundos | Tempo que a última leitura local é considerada válida |
 | `TEMPO_DEBOUNCE` | 50 ms | Debounce do botão |
 | `PINO_BOTAO` | GPIO 4 | Pino do botão |
+| `PINO_DHT` | GPIO 5 | Pino DATA do DHT11 |
 
 O NTP usa o fuso `<-03>3` (UTC-3), configurado em `sincronizarHora()`.
 
@@ -100,17 +121,19 @@ O NTP usa o fuso `<-03>3` (UTC-3), configurado em `sincronizarHora()`.
 ### Inicialização
 
 1. Configura o Monitor Serial em `115200`.
-2. Inicializa o barramento I2C e o display OLED.
+2. Inicializa o barramento I2C, o display OLED e o sensor DHT11.
 3. Configura o botão como entrada com pull-up.
-4. Conecta ao Wi-Fi.
-5. Sincroniza a hora via NTP.
-6. Faz a primeira consulta de clima.
+4. Faz a primeira leitura local de temperatura e umidade.
+5. Conecta ao Wi-Fi.
+6. Sincroniza a hora via NTP.
+7. Faz a primeira consulta de clima.
 
 ### Loop principal
 
-- Verifica o botão com debounce.
+- Verifica o botão com debounce e alterna na ordem clima → relógio → previsão.
+- A cada 2,5 segundos, lê o DHT11. Se a API estiver indisponível e a leitura for válida, atualiza a tela de clima com os dados locais.
 - A cada 1 segundo:
-  - no modo clima, atualiza apenas a linha do relógio;
+  - nos modos clima e previsão, atualiza apenas a linha do relógio;
   - no modo relógio, redesenha `HH:MM` em fonte grande.
 - A cada 10 minutos, consulta novamente a Open-Meteo.
 - Em caso de falha, tenta de novo em 60 segundos.
@@ -130,9 +153,45 @@ Atual 13:45:30
 
 A hora da última linha vem do NTP e atualiza a cada segundo. O ícone de clima aparece no canto superior direito (16×16) e o ícone de horário no início do rodapé (8×8). Para céu limpo, o ícone de clima é sol durante o dia e lua à noite.
 
+Se o Wi-Fi estiver desconectado ou a Open-Meteo não responder, a tela passa a mostrar a leitura local do DHT11 (desde que a última leitura tenha menos de 30 segundos):
+
+```
+Local (DHT11)
+29.0C
+Umidade 75%
+Sem Wi-Fi
+Verifique os dados
+Atual 13:45:30
+```
+
+Quando a API volta a responder, os dados da Open-Meteo substituem automaticamente os locais na próxima atualização. Sem leitura local válida, a tela continua exibindo a mensagem de erro.
+
+### DHT11
+
+- Leituras a cada 2,5 segundos no GPIO 5.
+- Faixa aceita: temperatura de 0 a 50 °C e umidade de 0 a 100 %.
+- A última leitura válida é mantida por até 30 segundos; depois disso, o fallback local é desativado.
+- O DHT11 tem precisão limitada (tipicamente ±2 °C e ±5 % de umidade relativa).
+
 ### Modo relógio
 
 Mostra um ícone de sol/lua centralizado no topo e `HH:MM` com fonte tamanho 4 logo abaixo. Se o NTP ainda não sincronizou, mostra `--:--` e omite o ícone.
+
+### Modo previsão
+
+Mostra três colunas, uma para hoje, uma para amanhã e outra para o dia seguinte:
+
+```text
+            Previsao
+ Hoje    Amanha    Sab
+  [sol]   [chuva]  [nuvem]
+  21/29    22/30    21/28
+   40%      80%      10%
+  Limpo    Chuva   Nublado
+Atual 13:45:30
+```
+
+Cada coluna exibe a temperatura mínima/máxima em °C, a probabilidade máxima de chuva, uma descrição curta da condição e o ícone WMO correspondente. O rótulo do terceiro dia é obtido da data retornada pela API; se não for possível interpretá-la, mostra `Depois`. O rodapé com a hora atualiza a cada segundo.
 
 ## API Open-Meteo
 
@@ -143,6 +202,8 @@ https://api.open-meteo.com/v1/forecast
   ?latitude=-22.9068
   &longitude=-43.1729
   &current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m
+  &daily=temperature_2m_min,temperature_2m_max,weather_code,precipitation_probability_max
+  &forecast_days=3
   &timezone=America%2FSao_Paulo
 ```
 
@@ -150,11 +211,16 @@ Campos consumidos:
 
 | Campo | Uso |
 |---|---|
-| `temperature_2m` | Temperatura atual |
-| `relative_humidity_2m` | Umidade relativa |
-| `apparent_temperature` | Sensação térmica |
-| `weather_code` | Código WMO da condição |
-| `wind_speed_10m` | Velocidade do vento |
+| `current.temperature_2m` | Temperatura atual |
+| `current.relative_humidity_2m` | Umidade relativa |
+| `current.apparent_temperature` | Sensação térmica |
+| `current.weather_code` | Código WMO da condição atual |
+| `current.wind_speed_10m` | Velocidade do vento |
+| `daily.time` | Datas usadas nos rótulos da previsão |
+| `daily.temperature_2m_min` | Temperatura mínima de cada dia |
+| `daily.temperature_2m_max` | Temperatura máxima de cada dia |
+| `daily.weather_code` | Código WMO da previsão diária |
+| `daily.precipitation_probability_max` | Probabilidade máxima de chuva |
 
 A API não exige chave. O horário exibido no display não vem da API: ele é obtido pelo NTP.
 
@@ -229,7 +295,8 @@ O script lê `icones.h`, interpreta os bitmaps em LSB-first (o mesmo formato usa
 - `icones.png`: contato com todos os ícones ampliados e rotulados;
 - `tela_clima_dia.png` e `tela_clima_noite.png`: mockups do modo clima;
 - `tela_relogio_dia.png` e `tela_relogio_noite.png`: mockups do modo relógio;
-- `telas.png`: composição com as quatro telas.
+- `tela_previsao.png`: mockup do modo previsão;
+- `telas.png`: composição com as cinco telas.
 
 Requisitos: Python 3 e Pillow. Se necessário:
 
@@ -249,8 +316,8 @@ Os ícones são renderizados exatamente como no display; os textos dos mockups s
 
 Compilação de referência para ESP32 Dev Module:
 
-- Flash: aproximadamente 1.084.088 bytes (82%).
-- RAM global: aproximadamente 50.912 bytes (15%).
+- Flash: aproximadamente 1.177.196 bytes (89%).
+- RAM global: aproximadamente 51.040 bytes (15%).
 
 Os valores podem variar conforme a versão do core ESP32 e das bibliotecas.
 
@@ -260,11 +327,14 @@ Os valores podem variar conforme a versão do core ESP32 e das bibliotecas.
 - **Sem Wi-Fi:** confira SSID, senha e se a rede é de 2,4 GHz.
 - **Hora `--:--`:** o NTP não sincronizou. Verifique se a rede permite UDP na porta 123.
 - **Erro na API:** veja no Monitor Serial o código HTTP ou o erro de JSON.
+- **DHT11 sem leitura (tela não mostra `Local (DHT11)`):** confira VCC no 3V3, GND, DATA no GPIO 5 e se o pino 3 (NC) está desconectado. Em sensores avulsos, verifique o pull-up de 10 kΩ entre DATA e VCC. O DHT11 não mede temperaturas abaixo de 0 °C.
 - **Botão não alterna:** confirme a ligação no GPIO 4 e no GND e se o botão está realmente fechando o contato quando pressionado.
 
 ## Limitações
 
 - O primeiro boot precisa de Wi-Fi para sincronizar o NTP e buscar o clima.
+- O DHT11 cobre apenas temperatura e umidade; o fallback local não exibe sensação térmica, vento, condição do céu nem previsão.
+- O DHT11 tem precisão limitada e faixa de operação restrita (0 a 50 °C), então o fallback é apenas uma indicação local.
 - Depois de sincronizado, o RTC interno continua contando mesmo sem Wi-Fi.
 - Após perder a alimentação, a hora precisa ser sincronizada novamente.
 - O NTP (SNTP/UDP) não é autenticado; a hora pode ser falsificada por um atacante na rede.
@@ -282,6 +352,7 @@ Mitigações aplicadas no firmware:
 - **TLS validado:** a conexão HTTPS usa `useBuiltinCACertBundle()` (bundle de CAs do core ESP32), em vez de `setInsecure()`. Requer core ESP32 3.x.
 - **Limite de resposta:** o corpo HTTP é lido com limite de 8 KB (`TAMANHO_MAXIMO_RESPOSTA`), evitando esgotamento de heap por resposta maliciosa.
 - **Validação de dados:** temperatura, sensação, umidade, vento e código WMO são checados por faixa antes de serem exibidos.
+- **Validação local:** as leituras do DHT11 passam por checagem de faixa e finitude antes de substituir os dados da API.
 - **Wi-Fi mínimo:** `WiFi.setMinSecurity(WIFI_AUTH_WPA2_PSK)` rejeita redes abertas/WEP; `WiFi.persistent(false)` evita gravar as credenciais na NVS; reconexão automática habilitada.
 - **Logs:** nenhuma credencial é impressa no Monitor Serial.
 
@@ -292,7 +363,7 @@ Limitações que permanecem: o NTP não é autenticado e o dispositivo não impe
 - Salvar o modo de visualização na NVS/Preferences.
 - Usar fonte customizada ou sete segmentos no modo relógio.
 - Adicionar ícones animados ou novas condições de clima.
-- Exibir previsão de mínima/máxima e probabilidade de chuva.
+- Ampliar a previsão para mais dias ou permitir navegar entre eles.
 - Adicionar RTC DS3231 para manter a hora sem Wi-Fi desde o boot.
 - Implementar atualização OTA.
 - Usar deep sleep para reduzir consumo.

@@ -222,15 +222,65 @@ def make_clock_screen(outdir, filename, clock_icon, clock_text):
     return path
 
 
+def draw_text_centered(draw, x, width, y, text, size, scale):
+    base_size = {1: 9, 2: 20, 4: 40}.get(size, size * 8)
+    font = load_font(base_size * scale)
+    center_x = (x + width / 2) * scale
+
+    try:
+        draw.text(
+            (center_x, y * scale),
+            text,
+            fill="white",
+            font=font,
+            anchor="mt",
+        )
+    except (TypeError, ValueError):
+        text_width = draw.textlength(text, font=font)
+        draw.text(
+            (center_x - text_width / 2, y * scale),
+            text,
+            fill="white",
+            font=font,
+        )
+
+
+def make_forecast_screen(outdir, filename, days):
+    scale = SCREEN_SCALE
+    canvas = Image.new("RGB", (128 * scale, 64 * scale), "black")
+    draw = ImageDraw.Draw(canvas)
+    column_width = 128 // 3
+
+    draw_text_centered(draw, 0, 128, 0, "Previsao", 1, scale)
+
+    for index, (label, weather_icon, minmax, rain, condition) in enumerate(days):
+        x = index * column_width
+        paste_icon(canvas, weather_icon, x + (column_width - 16) // 2, 16, scale)
+        draw_text_centered(draw, x, column_width, 8, label, 1, scale)
+        draw_text_centered(draw, x, column_width, 32, minmax, 1, scale)
+        draw_text_centered(draw, x, column_width, 40, rain, 1, scale)
+        draw_text_centered(draw, x, column_width, 48, condition, 1, scale)
+
+    draw_text(draw, 0, 56, "Atual 13:45:30", 1, scale)
+
+    path = outdir / filename
+    canvas.save(path)
+    return path
+
+
 def make_screen_sheet(screens, outdir):
     gap = 20
     label_height = 32
     first_image = Image.open(screens[0][1])
     width, height = first_image.size
+    rows = math.ceil(len(screens) / 2)
 
     canvas = Image.new(
         "RGB",
-        (2 * width + 3 * gap, 2 * (height + label_height) + 3 * gap),
+        (
+            2 * width + 3 * gap,
+            rows * (height + label_height) + (rows + 1) * gap,
+        ),
         "black",
     )
     draw = ImageDraw.Draw(canvas)
@@ -335,6 +385,21 @@ def main():
                 "tela_relogio_noite.png",
                 by_name["icone_lua"],
                 "22:15",
+            ),
+        )
+    )
+
+    screens.append(
+        (
+            "Previsao",
+            make_forecast_screen(
+                outdir,
+                "tela_previsao.png",
+                [
+                    ("Hoje", by_name["icone_sol"], "21/29", "40%", "Limpo"),
+                    ("Amanha", by_name["icone_chuva"], "22/30", "80%", "Chuva"),
+                    ("Sab", by_name["icone_nublado"], "21/28", "10%", "Nublado"),
+                ],
             ),
         )
     )
